@@ -8,6 +8,8 @@ Local Pi UI polish extension installed at:
 
 Pi auto-discovers this directory through `index.ts`. Use `/reload` after editing; if prototype patches look stale, restart Pi for a clean process.
 
+The collapsed activity grouping in `tool-groups.ts` is a best-effort internal runtime patch against Pi's interactive components. If a future Pi release changes those internal component paths or shapes, the extension skips that patch instead of crashing startup.
+
 ## Features
 
 - Markdown rendering polish for headings, code blocks, lists, quotes, rules, and tables.
@@ -27,5 +29,6 @@ Pi auto-discovers this directory through `index.ts`. Use `/reload` after editing
 - `markdown.ts` patches Pi TUI Markdown rendering.
 - `tool-groups.ts` patches Pi interactive tool/thinking rows into compact summaries.
 - `images.ts` wraps the editor for image-token paste handling.
+- `runtime-imports.ts` centralizes best-effort imports of Pi internal interactive runtime modules.
 - `paths.ts` resolves the installed Pi coding-agent root for runtime imports.
 - `constants.ts` contains shared patch symbols and image token regexes.

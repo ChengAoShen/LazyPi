@@ -1,10 +1,7 @@
-import { join } from "node:path";
-import { pathToFileURL } from "node:url";
-
 import { Container, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
 import { ASSISTANT_SEPARATOR_PATCH, COMPONENT_PARENT, CONTAINER_PARENT_PATCH, TOOL_EXECUTION_GROUP_PATCH } from "./constants.ts";
-import { getCodingAgentRoot } from "./paths.ts";
+import { loadInteractiveRuntime, type RuntimeTheme } from "./runtime-imports.ts";
 
 const TOOL_SUMMARY_WIDTH = 48;
 const MAX_TOOL_ROWS = 8;
@@ -49,8 +46,6 @@ type AssistantInfo = {
 };
 
 type RenderPatchState = { originalRender: (width: number) => string[] };
-type RuntimeTheme = { fg?: (color: string, text: string) => string };
-
 type ToolGroup = {
   tools: ToolLike[];
   thinkingTexts: string[];
@@ -415,31 +410,13 @@ function isContinuationOfCollapsedToolGroup(tool: ToolLike): boolean {
   return index >= 0 && hasCollapsedToolBefore(children, index);
 }
 
-async function loadInteractiveComponents(): Promise<{
-  ToolExecutionComponent?: { prototype: Record<PropertyKey, unknown> };
-  AssistantMessageComponent?: { prototype: Record<PropertyKey, unknown> };
-}> {
-  const root = getCodingAgentRoot();
-  const toolExecutionUrl = pathToFileURL(join(root, "dist/modes/interactive/components/tool-execution.js")).href;
-  const assistantMessageUrl = pathToFileURL(join(root, "dist/modes/interactive/components/assistant-message.js")).href;
-  const themeUrl = pathToFileURL(join(root, "dist/modes/interactive/theme/theme.js")).href;
-
-  const [{ ToolExecutionComponent }, { AssistantMessageComponent }, themeModule] = await Promise.all([
-    import(toolExecutionUrl) as Promise<{ ToolExecutionComponent?: { prototype: Record<PropertyKey, unknown> } }>,
-    import(assistantMessageUrl) as Promise<{ AssistantMessageComponent?: { prototype: Record<PropertyKey, unknown> } }>,
-    import(themeUrl).catch(() => undefined) as Promise<{ theme?: RuntimeTheme } | undefined>,
-  ]);
-  runtimeTheme = themeModule?.theme;
-
-  return { ToolExecutionComponent, AssistantMessageComponent };
-}
-
 export async function installToolExecutionGroupingPatch(): Promise<void> {
   installContainerParentPatch();
 
   let components: Awaited<ReturnType<typeof loadInteractiveComponents>>;
   try {
-    components = await loadInteractiveComponents();
+    components = await loadInteractiveRuntime();
+    runtimeTheme = components.theme;
   } catch (error) {
     console.warn(`[ui-optimize] skipped tool grouping patch: ${error instanceof Error ? error.message : String(error)}`);
     return;
