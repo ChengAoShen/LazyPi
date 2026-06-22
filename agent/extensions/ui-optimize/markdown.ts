@@ -30,6 +30,7 @@ type MarkdownRuntime = {
     codeBlockIndent?: string;
     highlightCode?: (code: string, lang?: string) => string[];
   };
+  getStylePrefix?: (styleFn: (text: string) => string) => string;
   renderInlineTokens?: (tokens: unknown[], styleContext?: unknown) => string;
 };
 
@@ -72,20 +73,30 @@ function renderCodeBlock(md: MarkdownRuntime, token: MarkdownToken, width: numbe
   return withGap(lines, next);
 }
 
-function renderHeading(md: MarkdownRuntime, token: MarkdownToken, width: number, next?: string, styleContext?: unknown): string[] {
+function renderHeading(md: MarkdownRuntime, token: MarkdownToken, width: number, next?: string, _styleContext?: unknown): string[] {
   const depth = Math.max(1, Math.min(6, Number(token.depth) || 1));
-  const text = md.renderInlineTokens?.(token.tokens ?? [], styleContext) ?? token.text ?? "";
-  const heading = md.theme.heading(md.theme.bold(text));
+  const headingStyle = (text: string) => md.theme.heading(md.theme.bold(text));
+  const headingStyleContext = {
+    applyText: headingStyle,
+    stylePrefix: md.getStylePrefix?.(headingStyle),
+  };
+  const text = md.renderInlineTokens?.(token.tokens ?? [], headingStyleContext) ?? headingStyle(token.text ?? "");
 
   if (depth === 1) {
     return withGap([
-      truncateToWidth(heading, width, ""),
-      md.theme.hr("━".repeat(Math.min(width, Math.max(visibleWidth(text), 12)))),
+      truncateToWidth(text, width, ""),
+      md.theme.hr("━".repeat(Math.min(width, Math.max(visibleWidth(token.text ?? text), 12)))),
     ], next);
   }
 
-  const prefix = depth === 2 ? "▌ " : `${"#".repeat(depth)} `;
-  return withGap([truncateToWidth(md.theme.heading(prefix) + heading, width, "")], next);
+  const prefixes: Record<number, string> = {
+    2: "▌ ",
+    3: "▸ ",
+    4: "▪ ",
+    5: "• ",
+    6: "· ",
+  };
+  return withGap([truncateToWidth(md.theme.heading(prefixes[depth] ?? "▸ ") + text, width, "")], next);
 }
 
 function renderList(md: MarkdownRuntime, token: MarkdownToken, width: number, styleContext?: unknown, depth = 0): string[] {
