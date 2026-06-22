@@ -49,6 +49,7 @@ type AssistantInfo = {
 };
 
 type RenderPatchState = { originalRender: (width: number) => string[] };
+type RuntimeTheme = { fg?: (color: string, text: string) => string };
 
 type ToolGroup = {
   tools: ToolLike[];
@@ -301,6 +302,33 @@ function thinkingLine(thinkingTexts: string[], width: number): string | undefine
   return `  💭 ${compactStartToWidth(thinkingTexts.join(" · "), Math.max(1, width - 5))}`;
 }
 
+function padToWidth(text: string, width: number): string {
+  return text + " ".repeat(Math.max(0, width - visibleWidth(text)));
+}
+
+let runtimeTheme: RuntimeTheme | undefined;
+
+function fg(color: string, text: string): string {
+  return runtimeTheme?.fg?.(color, text) ?? text;
+}
+
+function frameActivityBlock(lines: string[], width: number): string[] {
+  if (width < 8) return lines;
+
+  const leadingBlank = lines[0] === "" ? [""] : [];
+  const body = lines.slice(leadingBlank.length);
+  if (body.length === 0) return lines;
+
+  const innerWidth = Math.max(1, width - 4);
+  const border = (text: string) => fg("borderMuted", text);
+  return [
+    ...leadingBlank,
+    border(`╭${"─".repeat(Math.max(0, width - 2))}╮`),
+    ...body.map((line) => `${border("│ ")}${padToWidth(truncateToWidth(line, innerWidth, ""), innerWidth)}${border(" │")}`),
+    border(`╰${"─".repeat(Math.max(0, width - 2))}╯`),
+  ];
+}
+
 function renderSingleToolGroup(tool: ToolLike, thinkingTexts: string[], width: number): string[] {
   const title = thinkingTexts.length > 0
     ? `💭 Thinking ×${thinkingTexts.length} (Ctrl+T) · 🛠 ${tool.toolName ?? "tool"} (Ctrl+O)${toolArgSummary(tool)}`
@@ -368,8 +396,10 @@ function renderToolGroup(first: ToolLike, width: number): string[] | undefined {
 
   const errorLine = firstErrorLine(group.tools);
   if (errorLine) lines.push(truncateToWidth(errorLine, width, ""));
-  first[TOOL_GROUP_RENDER_CACHE] = { key, lines };
-  return lines;
+
+  const framed = frameActivityBlock(lines, width);
+  first[TOOL_GROUP_RENDER_CACHE] = { key, lines: framed };
+  return framed;
 }
 
 function isContinuationOfCollapsedToolGroup(tool: ToolLike): boolean {
@@ -392,11 +422,14 @@ async function loadInteractiveComponents(): Promise<{
   const root = getCodingAgentRoot();
   const toolExecutionUrl = pathToFileURL(join(root, "dist/modes/interactive/components/tool-execution.js")).href;
   const assistantMessageUrl = pathToFileURL(join(root, "dist/modes/interactive/components/assistant-message.js")).href;
+  const themeUrl = pathToFileURL(join(root, "dist/modes/interactive/theme/theme.js")).href;
 
-  const [{ ToolExecutionComponent }, { AssistantMessageComponent }] = await Promise.all([
+  const [{ ToolExecutionComponent }, { AssistantMessageComponent }, themeModule] = await Promise.all([
     import(toolExecutionUrl) as Promise<{ ToolExecutionComponent?: { prototype: Record<PropertyKey, unknown> } }>,
     import(assistantMessageUrl) as Promise<{ AssistantMessageComponent?: { prototype: Record<PropertyKey, unknown> } }>,
+    import(themeUrl).catch(() => undefined) as Promise<{ theme?: RuntimeTheme } | undefined>,
   ]);
+  runtimeTheme = themeModule?.theme;
 
   return { ToolExecutionComponent, AssistantMessageComponent };
 }

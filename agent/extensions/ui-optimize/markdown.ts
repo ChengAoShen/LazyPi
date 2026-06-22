@@ -46,10 +46,6 @@ function isToken(token: unknown, type: string): token is MarkdownToken {
   return typeof token === "object" && token !== null && (token as MarkdownToken).type === type;
 }
 
-function pad(text: string, width: number): string {
-  return text + " ".repeat(Math.max(0, width - visibleWidth(text)));
-}
-
 function renderCodeBlock(md: MarkdownRuntime, token: MarkdownToken, width: number, next?: string): string[] {
   const code = token.text ?? "";
   const lang = (token.lang ?? "").trim();
@@ -59,15 +55,14 @@ function renderCodeBlock(md: MarkdownRuntime, token: MarkdownToken, width: numbe
     return withGap(code.split("\n").map((line) => indent + md.theme.codeBlock(line)), next);
   }
 
-  const innerWidth = Math.max(1, width - 4);
+  const innerWidth = Math.max(1, width);
   const label = truncateToWidth(lang ? ` ${lang} ` : " code ", Math.max(0, width - 4), "");
   const topFill = Math.max(0, width - 2 - visibleWidth(label));
   const lines = [md.theme.codeBlockBorder(`╭${label}${"─".repeat(topFill)}╮`)];
   const highlighted = md.theme.highlightCode ? md.theme.highlightCode(code, lang) : code.split("\n").map((line) => md.theme.codeBlock(line));
 
   for (const line of highlighted.length ? highlighted : [""]) {
-    const content = truncateToWidth(line, innerWidth, "");
-    lines.push(md.theme.codeBlockBorder("│ ") + pad(content, innerWidth) + md.theme.codeBlockBorder(" │"));
+    lines.push(truncateToWidth(line, innerWidth, ""));
   }
   lines.push(md.theme.codeBlockBorder(`╰${"─".repeat(Math.max(0, width - 2))}╯`));
   return withGap(lines, next);
