@@ -155,12 +155,7 @@ export default function (pi: ExtensionAPI) {
 					};
 
 				case "add": {
-					if (!params.text) {
-						return {
-							content: [{ type: "text", text: "Error: text required for add" }],
-							details: { action: "add", todos: [...todos], nextId, error: "text required" } as TodoDetails,
-						};
-					}
+					if (!params.text) throw new Error("todo action=add requires text");
 					const newTodo: Todo = { id: nextId++, text: params.text, done: false };
 					todos.push(newTodo);
 					return {
@@ -170,24 +165,9 @@ export default function (pi: ExtensionAPI) {
 				}
 
 				case "toggle": {
-					if (params.id === undefined) {
-						return {
-							content: [{ type: "text", text: "Error: id required for toggle" }],
-							details: { action: "toggle", todos: [...todos], nextId, error: "id required" } as TodoDetails,
-						};
-					}
+					if (params.id === undefined) throw new Error("todo action=toggle requires id");
 					const todo = todos.find((t) => t.id === params.id);
-					if (!todo) {
-						return {
-							content: [{ type: "text", text: `Todo #${params.id} not found` }],
-							details: {
-								action: "toggle",
-								todos: [...todos],
-								nextId,
-								error: `#${params.id} not found`,
-							} as TodoDetails,
-						};
-					}
+					if (!todo) throw new Error(`Todo #${params.id} not found`);
 					todo.done = !todo.done;
 					return {
 						content: [{ type: "text", text: `Todo #${todo.id} ${todo.done ? "completed" : "uncompleted"}` }],
@@ -206,15 +186,7 @@ export default function (pi: ExtensionAPI) {
 				}
 
 				default:
-					return {
-						content: [{ type: "text", text: `Unknown action: ${params.action}` }],
-						details: {
-							action: "list",
-							todos: [...todos],
-							nextId,
-							error: `unknown action: ${params.action}`,
-						} as TodoDetails,
-					};
+					throw new Error(`Unknown todo action: ${params.action}`);
 			}
 		},
 
