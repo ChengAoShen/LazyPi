@@ -333,13 +333,13 @@ function renderMultiToolGroup(tools: ToolLike[], thinkingTexts: string[], width:
   const thought = thinkingLine(thinkingTexts, width);
   if (thought) lines.push(truncateToWidth(thought, width, ""));
 
-  for (const tool of tools.slice(0, MAX_TOOL_ROWS)) {
-    lines.push(truncateToWidth(`  ${toolStatus(tool)} ${tool.toolName ?? "tool"}${toolArgSummary(tool)}`, width, ""));
+  const hiddenCount = Math.max(0, tools.length - MAX_TOOL_ROWS);
+  if (hiddenCount > 0) {
+    lines.push(truncateToWidth(`  … ${hiddenCount} earlier tool call${hiddenCount === 1 ? "" : "s"}`, width, ""));
   }
 
-  if (tools.length > MAX_TOOL_ROWS) {
-    const remaining = tools.length - MAX_TOOL_ROWS;
-    lines.push(truncateToWidth(`  … ${remaining} more tool call${remaining === 1 ? "" : "s"}`, width, ""));
+  for (const tool of tools.slice(-MAX_TOOL_ROWS)) {
+    lines.push(truncateToWidth(`  ${toolStatus(tool)} ${tool.toolName ?? "tool"}${toolArgSummary(tool)}`, width, ""));
   }
 
   return lines;
