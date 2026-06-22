@@ -20,6 +20,13 @@
 - For one-off scripts or temporary tools, use `uvx` instead of local installation.
 - Use `ruff` when appropriate to check code quality and structure.
 
+# Background Work
+
+- Treat background shell jobs and sub-agents as agent-facing infrastructure. The user should normally ask for outcomes, not manually manage job ids.
+- Use `bg_shell_start` for long-running non-interactive commands, then proactively check or wait for results before relying on them.
+- Use `sub_agent` for independent parallel analysis; synthesize sub-agent outputs yourself before reporting to the user.
+- If background work fails or times out, inspect the status/log output and summarize the actionable issue instead of asking the user to operate the background tools directly.
+
 # Documentation
 
 - Write documentation in standard Markdown.

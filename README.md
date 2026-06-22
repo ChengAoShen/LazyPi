@@ -29,8 +29,8 @@ The goal is simple: open Pi and work. Long commands can run in the background, i
 ## ✨ Highlights
 
 - 🦥 **Personal-first defaults** — simple command aliases such as `exit → /quit` and `clear → /new`.
-- 🧵 **Background shell jobs** — start long-running commands, inspect logs, wait for completion, or cancel without blocking the main agent loop.
-- 🤖 **Simple headless sub-agents** — launch read-only Pi workers in parallel for research, review, planning, and test analysis.
+- 🧵 **Background shell jobs** — the main agent can start long-running commands, inspect logs, wait for completion, or cancel without blocking; running jobs aggregate in the footer and `/jobs` panel.
+- 🤖 **Simple headless sub-agents** — the main agent can launch read-only Pi workers in parallel for research, review, planning, and test analysis; running workers aggregate in the footer and `/jobs` panel.
 - 💬 **Ephemeral side chat** — `/side` and `/btw` open a lightweight no-tools overlay for explanations and side questions.
 - 📦 **Portable config** — clone into `~/.pi`, install extension packages, log in locally, and restore the working environment.
 
@@ -40,9 +40,8 @@ The goal is simple: open Pi and work. Long commands can run in the background, i
 
 | Extension | Purpose |
 | --- | --- |
-| `agent/extensions/command-aliases.ts` | Maps bare editor input like `exit` and `clear` to built-in slash commands. |
-| `agent/extensions/background-shell.ts` | Adds `bg_shell_start`, `bg_shell_status`, `bg_shell_wait`, and `bg_shell_cancel`. |
-| `agent/extensions/sub-agents.ts` | Adds `sub_agent` for starting, waiting on, checking, and cancelling headless Pi workers. |
+| `agent/extensions/command-aliases.ts` | Maps bare editor input like `exit` and `clear` to built-in slash commands, installed as a composable editor wrapper. |
+| `agent/extensions/background-jobs/` | Bundles background execution: `bg_shell_*`, `sub_agent`, unified footer sync, and the `/jobs` observation panel. |
 | `agent/extensions/side-chat.ts` | Adds `/side` and `/btw`, a temporary explanatory overlay with no tool execution. |
 | `agent/extensions/ssh.ts` | Local SSH helper extension. |
 | `agent/extensions/todo.ts` | Simple todo-list tool. |
@@ -54,7 +53,7 @@ The goal is simple: open Pi and work. Long commands can run in the background, i
 
 ### Background shell
 
-Use background shell tools for commands expected to take more than a few seconds:
+These tools are primarily for the main agent to schedule work. For non-interactive commands expected to take more than a few seconds, the main agent can use background shell jobs:
 
 ```text
 bg_shell_start   start a long-running non-interactive command
@@ -63,9 +62,11 @@ bg_shell_wait    wait for a job and collect final output
 bg_shell_cancel  terminate a running job
 ```
 
+In TUI mode, background work appears in the footer. Use `/jobs` to open/toggle a focused right-side overlay with recent jobs and tail output; use `/jobs shell` to filter shell jobs. Inside the overlay, `Esc`/`q` closes it and `a/s/g/f` switches filters.
+
 ### Sub-agents
 
-Use `sub_agent` when a task can be split into independent read-only work:
+`sub_agent` is also a main-agent concurrency primitive. The main agent can use it when a task can be split into independent read-only work:
 
 ```text
 start       start one headless Pi worker
@@ -82,6 +83,8 @@ read, grep, find, ls
 ```
 
 They are started with `--no-session --no-extensions` to avoid polluting the main session or recursively creating more agents.
+
+In TUI mode, background work appears in the footer. Use `/jobs agents` to inspect recent workers and tail output in the focused jobs overlay.
 
 ### Side chat
 

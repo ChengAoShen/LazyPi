@@ -14,6 +14,7 @@ import { join, resolve } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import type { createJobsMonitor } from "./job-monitor.ts";
 
 const WORK_DIR = join(homedir(), ".pi", "agent", "tmp", "sub-agents");
 const MAIN_PROGRESS_PATH = join(WORK_DIR, "main-tool-progress.md");
@@ -300,9 +301,24 @@ One short paragraph.
 `;
 }
 
-export default function (pi: ExtensionAPI) {
+type JobsMonitor = ReturnType<typeof createJobsMonitor>;
+
+export function installSubAgents(pi: ExtensionAPI, jobsMonitor: JobsMonitor) {
 	let nextAgentNumber = 1;
 	const jobs = new Map<string, SubAgentJob>();
+	const monitor = jobsMonitor.registerSource({
+		id: "agents",
+		title: "sub-agent jobs",
+		emptyText: "no sub-agent jobs",
+		getJobs: () => [...jobs.values()].map((job) => ({
+			id: job.id,
+			status: job.status,
+			startedAt: job.startedAt,
+			endedAt: job.endedAt,
+			label: job.label ?? job.role ?? job.task,
+			tail: job.tail,
+		})),
+	});
 
 	pi.on("agent_start", async () => {
 		mainToolProgress.clear();
@@ -415,6 +431,7 @@ export default function (pi: ExtensionAPI) {
 			waiters: [],
 		};
 		jobs.set(id, job);
+		monitor.update();
 
 		log.write(`$ pi ${args.map((arg) => JSON.stringify(arg)).join(" ")}\n\n`);
 		child.stdout.on("data", (data: Buffer) => {
@@ -425,15 +442,20 @@ export default function (pi: ExtensionAPI) {
 			if (!log.writableEnded && !log.destroyed) log.write(data);
 			appendTail(job, data);
 		});
-		child.on("error", (error) => finishJob(job, "failed", null, null, error.message));
+		child.on("error", (error) => {
+			finishJob(job, "failed", null, null, error.message);
+			monitor.update();
+		});
 		child.on("close", (code, closeSignal) => {
 			if (job.status === "timed_out" || job.status === "cancelled") return;
 			finishJob(job, code === 0 ? "exited" : "failed", code, closeSignal);
+			monitor.update();
 		});
 
 		if (input.timeoutSeconds && input.timeoutSeconds > 0) {
 			job.timeout = setTimeout(() => {
 				finishJob(job, "timed_out", null, "SIGTERM", `Timed out after ${input.timeoutSeconds}s`);
+				monitor.update();
 				killProcessGroup(job, "SIGTERM");
 				setTimeout(() => killProcessGroup(job, "SIGKILL"), TERM_GRACE_MS);
 			}, input.timeoutSeconds * 1000);
@@ -483,6 +505,7 @@ export default function (pi: ExtensionAPI) {
 			if (action === "start") {
 				if (!params.task) throw new Error("sub_agent action=start requires task");
 				const job = await startSubAgent(params as AgentTask, ctx.cwd);
+				monitor.update(ctx);
 				return {
 					content: [{ type: "text", text: `Started sub-agent ${job.id}${job.label ? ` (${job.label})` : ""}\nRole: ${job.role ?? "general"}\nCWD: ${job.cwd}\nTools: ${job.tools.join(",")}\nPrompt: ${job.promptPath}\nLog: ${job.logPath}\nParent progress: ${MAIN_PROGRESS_PATH}` }],
 					details: { id: job.id, status: job.status, promptPath: job.promptPath, logPath: job.logPath, parentProgressPath: MAIN_PROGRESS_PATH },
@@ -496,6 +519,7 @@ export default function (pi: ExtensionAPI) {
 				for (const task of params.tasks as AgentTask[]) {
 					started.push(await startSubAgent(task, ctx.cwd));
 				}
+				monitor.update(ctx);
 				const lines = started.map((job) => `${job.id}\t${job.status}\t${job.label ?? job.role ?? "sub-agent"}\t${job.logPath}`);
 				return { content: [{ type: "text", text: `Started ${started.length} sub-agents concurrently:\n${lines.join("\n")}\nParent progress: ${MAIN_PROGRESS_PATH}` }], details: { ids: started.map((job) => job.id), parentProgressPath: MAIN_PROGRESS_PATH } };
 			}
@@ -544,6 +568,7 @@ export default function (pi: ExtensionAPI) {
 						continue;
 					}
 					finishJob(job, "cancelled", null, "SIGTERM", "Cancelled by sub_agent cancel");
+					monitor.update(ctx);
 					killProcessGroup(job, "SIGTERM");
 					setTimeout(() => killProcessGroup(job, "SIGKILL"), TERM_GRACE_MS);
 					lines.push(`${job.id} cancelled`);

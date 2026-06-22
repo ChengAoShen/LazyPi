@@ -12,6 +12,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import type { createJobsMonitor } from "./job-monitor.ts";
 
 const LOG_DIR = join(homedir(), ".pi", "agent", "tmp", "background-shell");
 const TAIL_LIMIT_BYTES = 64 * 1024;
@@ -157,9 +158,24 @@ function waitForJob(job: BackgroundJob, timeoutSeconds: number | undefined, sign
 	});
 }
 
-export default function (pi: ExtensionAPI) {
+type JobsMonitor = ReturnType<typeof createJobsMonitor>;
+
+export function installBackgroundShell(pi: ExtensionAPI, jobsMonitor: JobsMonitor) {
 	let nextJobNumber = 1;
 	const jobs = new Map<string, BackgroundJob>();
+	const monitor = jobsMonitor.registerSource({
+		id: "shell",
+		title: "shell jobs",
+		emptyText: "no shell jobs",
+		getJobs: () => [...jobs.values()].map((job) => ({
+			id: job.id,
+			status: job.status,
+			startedAt: job.startedAt,
+			endedAt: job.endedAt,
+			label: job.label ?? job.command,
+			tail: job.tail,
+		})),
+	});
 
 	pi.registerTool({
 		name: "bg_shell_start",
@@ -211,6 +227,7 @@ export default function (pi: ExtensionAPI) {
 				waiters: [],
 			};
 			jobs.set(id, job);
+			monitor.update(ctx);
 
 			log.write(`$ cd ${shellQuote(cwd)} && ${params.command}\n\n`);
 			child.stdout.on("data", (data: Buffer) => {
@@ -223,12 +240,14 @@ export default function (pi: ExtensionAPI) {
 			});
 			child.on("error", (error) => {
 				finishJob(job, "failed", null, null, error.message);
+				monitor.update(ctx);
 			});
 			child.on("close", (code, closeSignal) => {
 				const timedOut = job.status === "timed_out";
 				const cancelled = job.status === "cancelled";
 				if (timedOut || cancelled) return;
 				finishJob(job, code === 0 ? "exited" : "failed", code, closeSignal);
+				monitor.update(ctx);
 				try {
 					ctx.ui.notify(`Background job ${id} finished: ${job.status}${code === null ? "" : ` (${code})`}`, code === 0 ? "info" : "warning");
 				} catch {
@@ -239,6 +258,7 @@ export default function (pi: ExtensionAPI) {
 			if (params.timeoutSeconds && params.timeoutSeconds > 0) {
 				job.timeout = setTimeout(() => {
 					finishJob(job, "timed_out", null, "SIGTERM", `Timed out after ${params.timeoutSeconds}s`);
+					monitor.update(ctx);
 					killProcessGroup(job, "SIGTERM");
 					setTimeout(() => killProcessGroup(job, "SIGKILL"), TERM_GRACE_MS);
 				}, params.timeoutSeconds * 1000);
@@ -303,12 +323,13 @@ export default function (pi: ExtensionAPI) {
 		parameters: Type.Object({
 			jobId: Type.String({ description: "Job id returned by bg_shell_start." }),
 		}),
-		async execute(_toolCallId, params) {
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const job = jobs.get(params.jobId);
 			if (!job) throw new Error(`Unknown background job: ${params.jobId}`);
 			if (job.status !== "running") return { content: [{ type: "text", text: `Job ${job.id} is already ${job.status}.` }], details: { id: job.id, status: job.status } };
 
 			finishJob(job, "cancelled", null, "SIGTERM", "Cancelled by bg_shell_cancel");
+			monitor.update(ctx);
 			killProcessGroup(job, "SIGTERM");
 			setTimeout(() => killProcessGroup(job, "SIGKILL"), TERM_GRACE_MS);
 			return { content: [{ type: "text", text: `Cancelled background job ${job.id}.\nLog: ${job.logPath}` }], details: { id: job.id, status: job.status, logPath: job.logPath } };
