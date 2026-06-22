@@ -4,6 +4,7 @@
 # Keep repo metadata files.
 !.gitignore
 !README.md
+!README_zh.md
 
 # Keep selected Pi agent configuration.
 !agent/
