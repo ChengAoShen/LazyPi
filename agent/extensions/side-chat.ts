@@ -16,9 +16,64 @@ type ChatItem = {
 	text: string;
 };
 
+type MainToolProgress = {
+	id: string;
+	toolName: string;
+	args?: unknown;
+	partialResult?: unknown;
+	result?: unknown;
+	isError?: boolean;
+	status: "running" | "finished";
+	startedAt: number;
+	updatedAt: number;
+	endedAt?: number;
+};
+
 type TuiLike = {
 	requestRender: () => void;
 };
+
+const mainToolProgress = new Map<string, MainToolProgress>();
+
+function compactValue(value: unknown, maxLength = 1200): string {
+	let text: string;
+	try {
+		const json = typeof value === "string" ? value : JSON.stringify(value);
+		text = json ?? String(value);
+	} catch {
+		text = String(value);
+	}
+	if (!text) return "";
+	text = text.replace(/\s+/g, " ").trim();
+	return text.length > maxLength ? `${text.slice(0, maxLength)}…` : text;
+}
+
+function formatMainToolProgress(): string {
+	const entries = [...mainToolProgress.values()]
+		.sort((a, b) => a.startedAt - b.startedAt)
+		.slice(-20);
+	if (!entries.length) return "No main-agent tool executions have been observed yet.";
+
+	const now = Date.now();
+	return entries
+		.map((entry) => {
+			const elapsed = Math.max(0, Math.round(((entry.endedAt ?? now) - entry.startedAt) / 1000));
+			const lines = [`- ${entry.toolName} (${entry.status}${entry.isError ? ", error" : ""}, ${elapsed}s, id=${entry.id})`];
+			const args = compactValue(entry.args, 700);
+			if (args) lines.push(`  args: ${args}`);
+			const partial = compactValue(entry.partialResult, 900);
+			if (entry.status === "running" && partial) lines.push(`  latest update: ${partial}`);
+			const result = compactValue(entry.result, 900);
+			if (entry.status === "finished" && result) lines.push(`  result: ${result}`);
+			return lines.join("\n");
+		})
+		.join("\n");
+}
+
+function pruneMainToolProgress(): void {
+	const entries = [...mainToolProgress.values()].sort((a, b) => b.updatedAt - a.updatedAt);
+	for (const entry of entries.slice(40)) mainToolProgress.delete(entry.id);
+}
 
 const SYSTEM_PROMPT = `You are a temporary side-chat agent embedded inside pi.
 
@@ -30,7 +85,8 @@ Constraints:
 - You have no tools and cannot execute commands, inspect files, or modify anything.
 - Do not claim that you performed actions. If execution or code inspection is needed, tell the user to ask the main agent.
 - Keep answers concise unless the user asks for detail.
-- Use the provided recent main conversation context only as background.`;
+- Use the provided recent main conversation context only as background.
+- You may also receive a live snapshot of the main agent's current/recent tool executions. Treat it as observational context, not as work you performed.`;
 
 function extractText(content: unknown): string {
 	if (typeof content === "string") return content;
@@ -301,9 +357,10 @@ async function openSideChat(args: string, ctx: ExtensionCommandContext): Promise
 	await ctx.ui.custom<void>(
 		(tui, theme, _keybindings, done) => {
 			const send = async (text: string) => {
+				const progress = formatMainToolProgress();
 				const userMessage: UserMessage = {
 					role: "user",
-					content: [{ type: "text", text }],
+					content: [{ type: "text", text: `Current main-agent tool progress snapshot:\n\n${progress}\n\nSide-chat question:\n${text}` }],
 					timestamp: Date.now(),
 				};
 				messages.push(userMessage);
@@ -344,6 +401,59 @@ async function openSideChat(args: string, ctx: ExtensionCommandContext): Promise
 }
 
 export default function (pi: ExtensionAPI) {
+	pi.on("agent_start", async () => {
+		mainToolProgress.clear();
+	});
+
+	pi.on("tool_execution_start", async (event) => {
+		mainToolProgress.set(event.toolCallId, {
+			id: event.toolCallId,
+			toolName: event.toolName,
+			args: event.args,
+			status: "running",
+			startedAt: Date.now(),
+			updatedAt: Date.now(),
+		});
+		pruneMainToolProgress();
+	});
+
+	pi.on("tool_execution_update", async (event) => {
+		const existing = mainToolProgress.get(event.toolCallId);
+		if (!existing) {
+			mainToolProgress.set(event.toolCallId, {
+				id: event.toolCallId,
+				toolName: event.toolName,
+				args: event.args,
+				partialResult: event.partialResult,
+				status: "running",
+				startedAt: Date.now(),
+				updatedAt: Date.now(),
+			});
+			return;
+		}
+		existing.args = event.args ?? existing.args;
+		existing.partialResult = event.partialResult;
+		existing.updatedAt = Date.now();
+	});
+
+	pi.on("tool_execution_end", async (event) => {
+		const existing = mainToolProgress.get(event.toolCallId);
+		const now = Date.now();
+		mainToolProgress.set(event.toolCallId, {
+			id: event.toolCallId,
+			toolName: event.toolName,
+			args: existing?.args,
+			partialResult: existing?.partialResult,
+			result: event.result,
+			isError: event.isError,
+			status: "finished",
+			startedAt: existing?.startedAt ?? now,
+			updatedAt: now,
+			endedAt: now,
+		});
+		pruneMainToolProgress();
+	});
+
 	const command = {
 		description: "Open a temporary no-tools side chat for explanations",
 		handler: async (args: string, ctx: ExtensionCommandContext) => openSideChat(args, ctx),

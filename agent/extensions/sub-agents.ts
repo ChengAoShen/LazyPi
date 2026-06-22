@@ -16,6 +16,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
 const WORK_DIR = join(homedir(), ".pi", "agent", "tmp", "sub-agents");
+const MAIN_PROGRESS_PATH = join(WORK_DIR, "main-tool-progress.md");
 const TAIL_LIMIT_BYTES = 64 * 1024;
 const RESULT_LIMIT_BYTES = 50 * 1024;
 const TERM_GRACE_MS = 3000;
@@ -26,6 +27,19 @@ const DEFAULT_THINKING = "medium";
 type AgentStatus = "running" | "exited" | "failed" | "timed_out" | "cancelled";
 type Action = "start" | "start_many" | "status" | "wait" | "cancel";
 type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+
+type MainToolProgress = {
+	id: string;
+	toolName: string;
+	args?: unknown;
+	partialResult?: unknown;
+	result?: unknown;
+	isError?: boolean;
+	status: "running" | "finished";
+	startedAt: number;
+	updatedAt: number;
+	endedAt?: number;
+};
 
 type AgentTask = {
 	task: string;
@@ -75,6 +89,56 @@ const TaskSchema = Type.Object({
 	thinking: Type.Optional(StringEnum(["off", "minimal", "low", "medium", "high", "xhigh"] as const)),
 	timeoutSeconds: Type.Optional(Type.Number({ description: "Optional maximum runtime before the sub-agent is terminated." })),
 });
+
+const mainToolProgress = new Map<string, MainToolProgress>();
+
+function compactValue(value: unknown, maxLength = 1200): string {
+	let text: string;
+	try {
+		const json = typeof value === "string" ? value : JSON.stringify(value);
+		text = json ?? String(value);
+	} catch {
+		text = String(value);
+	}
+	if (!text) return "";
+	text = text.replace(/\s+/g, " ").trim();
+	return text.length > maxLength ? `${text.slice(0, maxLength)}…` : text;
+}
+
+function formatMainToolProgress(): string {
+	const entries = [...mainToolProgress.values()]
+		.sort((a, b) => a.startedAt - b.startedAt)
+		.slice(-30);
+	const lines = ["# Parent main-agent tool progress", "", `Updated: ${new Date().toISOString()}`, ""];
+	if (!entries.length) {
+		lines.push("No main-agent tool executions have been observed yet.");
+		return lines.join("\n");
+	}
+
+	const now = Date.now();
+	for (const entry of entries) {
+		const elapsed = Math.max(0, Math.round(((entry.endedAt ?? now) - entry.startedAt) / 1000));
+		lines.push(`- ${entry.toolName} (${entry.status}${entry.isError ? ", error" : ""}, ${elapsed}s, id=${entry.id})`);
+		const args = compactValue(entry.args, 700);
+		if (args) lines.push(`  - args: ${args}`);
+		const partial = compactValue(entry.partialResult, 900);
+		if (entry.status === "running" && partial) lines.push(`  - latest update: ${partial}`);
+		const result = compactValue(entry.result, 900);
+		if (entry.status === "finished" && result) lines.push(`  - result: ${result}`);
+	}
+	return lines.join("\n");
+}
+
+function pruneMainToolProgress(): void {
+	const entries = [...mainToolProgress.values()].sort((a, b) => b.updatedAt - a.updatedAt);
+	for (const entry of entries.slice(60)) mainToolProgress.delete(entry.id);
+}
+
+function writeMainProgressSnapshot(): void {
+	void mkdir(WORK_DIR, { recursive: true })
+		.then(() => writeFile(MAIN_PROGRESS_PATH, `${formatMainToolProgress()}\n`, "utf8"))
+		.catch(() => undefined);
+}
 
 function appendTail(job: SubAgentJob, data: Buffer): void {
 	job.tail += data.toString("utf8");
@@ -200,6 +264,8 @@ function buildPrompt(input: AgentTask, cwd: string, tools: string[]): string {
 	const mutationNote = tools.some((tool) => ["bash", "edit", "write"].includes(tool))
 		? "You may use the tools explicitly enabled for you, but avoid unnecessary file mutations and report every mutation you make."
 		: "You are read-only. Do not attempt to modify files. Focus on analysis, evidence, and recommendations.";
+	const canReadProgress = tools.includes("read");
+	const progressSnapshot = formatMainToolProgress();
 
 	return `You are a ${role} running as a headless sub-agent for a parent coding agent.
 
@@ -208,12 +274,18 @@ Working directory: ${cwd}
 Task:
 ${input.task}
 
+Parent main-agent progress:
+${progressSnapshot}
+
+${canReadProgress ? `The parent also writes a live progress file at ${MAIN_PROGRESS_PATH}. If your work depends on what the parent is doing now, read that file for a fresher snapshot before finalizing.` : `You do not have the read tool, so you only have the progress snapshot above.`}
+
 Operating rules:
 - Work independently and stay narrowly focused on the task.
 - ${mutationNote}
 - Prefer concrete evidence: file paths, symbol names, commands, test results, and concise reasoning.
 - Do not ask the user questions. If information is missing, state assumptions.
 - Do not spawn additional sub-agents.
+- Use parent progress only as situational awareness; do not claim that you performed the parent's tool calls.
 
 Return your final answer in this format:
 
@@ -232,6 +304,66 @@ export default function (pi: ExtensionAPI) {
 	let nextAgentNumber = 1;
 	const jobs = new Map<string, SubAgentJob>();
 
+	pi.on("agent_start", async () => {
+		mainToolProgress.clear();
+		writeMainProgressSnapshot();
+	});
+
+	pi.on("tool_execution_start", async (event) => {
+		const now = Date.now();
+		mainToolProgress.set(event.toolCallId, {
+			id: event.toolCallId,
+			toolName: event.toolName,
+			args: event.args,
+			status: "running",
+			startedAt: now,
+			updatedAt: now,
+		});
+		pruneMainToolProgress();
+		writeMainProgressSnapshot();
+	});
+
+	pi.on("tool_execution_update", async (event) => {
+		const existing = mainToolProgress.get(event.toolCallId);
+		if (!existing) {
+			const now = Date.now();
+			mainToolProgress.set(event.toolCallId, {
+				id: event.toolCallId,
+				toolName: event.toolName,
+				args: event.args,
+				partialResult: event.partialResult,
+				status: "running",
+				startedAt: now,
+				updatedAt: now,
+			});
+			writeMainProgressSnapshot();
+			return;
+		}
+		existing.args = event.args ?? existing.args;
+		existing.partialResult = event.partialResult;
+		existing.updatedAt = Date.now();
+		writeMainProgressSnapshot();
+	});
+
+	pi.on("tool_execution_end", async (event) => {
+		const existing = mainToolProgress.get(event.toolCallId);
+		const now = Date.now();
+		mainToolProgress.set(event.toolCallId, {
+			id: event.toolCallId,
+			toolName: event.toolName,
+			args: existing?.args,
+			partialResult: existing?.partialResult,
+			result: event.result,
+			isError: event.isError,
+			status: "finished",
+			startedAt: existing?.startedAt ?? now,
+			updatedAt: now,
+			endedAt: now,
+		});
+		pruneMainToolProgress();
+		writeMainProgressSnapshot();
+	});
+
 	async function startSubAgent(input: AgentTask, parentCwd: string): Promise<SubAgentJob> {
 		await mkdir(WORK_DIR, { recursive: true });
 
@@ -244,6 +376,7 @@ export default function (pi: ExtensionAPI) {
 		const thinking = input.thinking ?? DEFAULT_THINKING;
 		const promptPath = join(WORK_DIR, `${id}.prompt.md`);
 		const logPath = join(WORK_DIR, `${id}.log`);
+		await writeFile(MAIN_PROGRESS_PATH, `${formatMainToolProgress()}\n`, "utf8");
 		const prompt = buildPrompt(input, cwd, tools);
 		await writeFile(promptPath, prompt, "utf8");
 
@@ -318,12 +451,13 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "sub_agent",
 		label: "Sub Agent",
-		description: "Start, inspect, wait for, or cancel headless pi sub-agents. Supports starting many independent sub-agents concurrently for parallel analysis. Sub-agents are read-only by default and run with --no-session --no-extensions.",
+		description: "Start, inspect, wait for, or cancel headless pi sub-agents. Supports starting many independent sub-agents concurrently for parallel analysis. Sub-agents are read-only by default, run with --no-session --no-extensions, and receive a snapshot/path for parent tool progress.",
 		promptSnippet: "Run multiple headless pi sub-agents concurrently for delegated analysis",
 		promptGuidelines: [
 			"Use sub_agent start_many when a task can be decomposed into independent research, code review, test analysis, or planning subtasks that benefit from concurrent agents.",
 			"Prefer default read-only sub-agents. The parent agent should synthesize results and perform final edits.",
 			`Do not start more than ${MAX_START_MANY} sub-agents at once unless the user explicitly requests a different approach; this tool enforces a hard limit of ${MAX_START_MANY} running sub-agents.`,
+			"Sub-agents receive parent tool progress as situational awareness; if they need the freshest state and have read access, they can read the provided progress file.",
 			"After sub_agent start or start_many, call sub_agent wait before relying on the results.",
 			"Sub-agents run with --no-extensions, so they cannot recursively create more sub-agents.",
 		],
@@ -350,8 +484,8 @@ export default function (pi: ExtensionAPI) {
 				if (!params.task) throw new Error("sub_agent action=start requires task");
 				const job = await startSubAgent(params as AgentTask, ctx.cwd);
 				return {
-					content: [{ type: "text", text: `Started sub-agent ${job.id}${job.label ? ` (${job.label})` : ""}\nRole: ${job.role ?? "general"}\nCWD: ${job.cwd}\nTools: ${job.tools.join(",")}\nPrompt: ${job.promptPath}\nLog: ${job.logPath}` }],
-					details: { id: job.id, status: job.status, promptPath: job.promptPath, logPath: job.logPath },
+					content: [{ type: "text", text: `Started sub-agent ${job.id}${job.label ? ` (${job.label})` : ""}\nRole: ${job.role ?? "general"}\nCWD: ${job.cwd}\nTools: ${job.tools.join(",")}\nPrompt: ${job.promptPath}\nLog: ${job.logPath}\nParent progress: ${MAIN_PROGRESS_PATH}` }],
+					details: { id: job.id, status: job.status, promptPath: job.promptPath, logPath: job.logPath, parentProgressPath: MAIN_PROGRESS_PATH },
 				};
 			}
 
@@ -363,7 +497,7 @@ export default function (pi: ExtensionAPI) {
 					started.push(await startSubAgent(task, ctx.cwd));
 				}
 				const lines = started.map((job) => `${job.id}\t${job.status}\t${job.label ?? job.role ?? "sub-agent"}\t${job.logPath}`);
-				return { content: [{ type: "text", text: `Started ${started.length} sub-agents concurrently:\n${lines.join("\n")}` }], details: { ids: started.map((job) => job.id) } };
+				return { content: [{ type: "text", text: `Started ${started.length} sub-agents concurrently:\n${lines.join("\n")}\nParent progress: ${MAIN_PROGRESS_PATH}` }], details: { ids: started.map((job) => job.id), parentProgressPath: MAIN_PROGRESS_PATH } };
 			}
 
 			if (action === "status") {
