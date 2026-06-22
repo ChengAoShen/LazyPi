@@ -1,6 +1,8 @@
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { matchesKey, truncateToWidth, type Component, type Focusable } from "@earendil-works/pi-tui";
 
+import { formatDuration } from "../shared/shell.ts";
+
 export type MonitoredJob = {
 	id: string;
 	status: string;
@@ -21,14 +23,6 @@ type Filter = "all" | "failed" | string;
 
 const STATUS_KEY = "background-jobs";
 const FAILED_STATUSES = new Set(["failed", "timed_out"]);
-
-export function formatDuration(ms: number): string {
-	const seconds = Math.max(0, Math.round(ms / 1000));
-	if (seconds < 60) return `${seconds}s`;
-	const minutes = Math.floor(seconds / 60);
-	const rest = seconds % 60;
-	return `${minutes}m${rest.toString().padStart(2, "0")}s`;
-}
 
 function compactText(text: string, maxLength = 32): string {
 	const compact = text.replace(/\s+/g, " ").trim();

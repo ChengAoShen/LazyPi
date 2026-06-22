@@ -14,12 +14,11 @@ import { join, resolve } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { appendTail as appendTailText, formatDuration, RESULT_LIMIT_BYTES, timestampForFile, truncateTail } from "../shared/shell.ts";
 import type { createJobsMonitor } from "./job-monitor.ts";
 
 const WORK_DIR = join(homedir(), ".pi", "agent", "tmp", "sub-agents");
 const MAIN_PROGRESS_PATH = join(WORK_DIR, "main-tool-progress.md");
-const TAIL_LIMIT_BYTES = 64 * 1024;
-const RESULT_LIMIT_BYTES = 50 * 1024;
 const TERM_GRACE_MS = 3000;
 const MAX_START_MANY = 8;
 const DEFAULT_TOOLS = ["read", "grep", "find", "ls"];
@@ -142,37 +141,7 @@ function writeMainProgressSnapshot(): void {
 }
 
 function appendTail(job: SubAgentJob, data: Buffer): void {
-	job.tail += data.toString("utf8");
-	const bytes = Buffer.byteLength(job.tail, "utf8");
-	if (bytes <= TAIL_LIMIT_BYTES) return;
-
-	let cut = bytes - TAIL_LIMIT_BYTES;
-	let index = 0;
-	while (index < job.tail.length && cut > 0) {
-		cut -= Buffer.byteLength(job.tail[index], "utf8");
-		index++;
-	}
-	job.tail = job.tail.slice(index);
-}
-
-function truncateTail(text: string, maxBytes = RESULT_LIMIT_BYTES): { text: string; truncated: boolean } {
-	if (Buffer.byteLength(text, "utf8") <= maxBytes) return { text, truncated: false };
-
-	let bytes = 0;
-	let index = text.length;
-	while (index > 0 && bytes < maxBytes) {
-		index--;
-		bytes += Buffer.byteLength(text[index], "utf8");
-	}
-	return { text: text.slice(index), truncated: true };
-}
-
-function formatDuration(ms: number): string {
-	const seconds = Math.max(0, Math.round(ms / 1000));
-	if (seconds < 60) return `${seconds}s`;
-	const minutes = Math.floor(seconds / 60);
-	const rest = seconds % 60;
-	return `${minutes}m${rest.toString().padStart(2, "0")}s`;
+	job.tail = appendTailText(job.tail, data);
 }
 
 function killProcessGroup(job: SubAgentJob, signal: NodeJS.Signals): void {
@@ -390,8 +359,9 @@ export function installSubAgents(pi: ExtensionAPI, jobsMonitor: JobsMonitor) {
 		const cwd = resolve(parentCwd, input.cwd ?? ".");
 		const tools = input.tools?.length ? input.tools : DEFAULT_TOOLS;
 		const thinking = input.thinking ?? DEFAULT_THINKING;
-		const promptPath = join(WORK_DIR, `${id}.prompt.md`);
-		const logPath = join(WORK_DIR, `${id}.log`);
+		const stamp = timestampForFile();
+		const promptPath = join(WORK_DIR, `${id}-${stamp}.prompt.md`);
+		const logPath = join(WORK_DIR, `${id}-${stamp}.log`);
 		await writeFile(MAIN_PROGRESS_PATH, `${formatMainToolProgress()}\n`, "utf8");
 		const prompt = buildPrompt(input, cwd, tools);
 		await writeFile(promptPath, prompt, "utf8");
@@ -515,6 +485,10 @@ export function installSubAgents(pi: ExtensionAPI, jobsMonitor: JobsMonitor) {
 			if (action === "start_many") {
 				if (!params.tasks?.length) throw new Error("sub_agent action=start_many requires tasks");
 				if (params.tasks.length > MAX_START_MANY) throw new Error(`start_many supports at most ${MAX_START_MANY} tasks`);
+				const running = [...jobs.values()].filter((job) => job.status === "running").length;
+				if (running + params.tasks.length > MAX_START_MANY) {
+					throw new Error(`Cannot start ${params.tasks.length} sub-agents: ${running} already running and the limit is ${MAX_START_MANY}. Wait or cancel some before starting more.`);
+				}
 				const started: SubAgentJob[] = [];
 				for (const task of params.tasks as AgentTask[]) {
 					started.push(await startSubAgent(task, ctx.cwd));

@@ -12,11 +12,10 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { appendTail as appendTailText, formatDuration, RESULT_LIMIT_BYTES, shellQuote, timestampForFile, truncateTail } from "../shared/shell.ts";
 import type { createJobsMonitor } from "./job-monitor.ts";
 
 const LOG_DIR = join(homedir(), ".pi", "agent", "tmp", "background-shell");
-const TAIL_LIMIT_BYTES = 64 * 1024;
-const RESULT_LIMIT_BYTES = 50 * 1024;
 const TERM_GRACE_MS = 3000;
 
 type JobStatus = "running" | "exited" | "failed" | "timed_out" | "cancelled";
@@ -41,41 +40,7 @@ type BackgroundJob = {
 };
 
 function appendTail(job: BackgroundJob, data: Buffer): void {
-	job.tail += data.toString("utf8");
-	const bytes = Buffer.byteLength(job.tail, "utf8");
-	if (bytes <= TAIL_LIMIT_BYTES) return;
-
-	let cut = bytes - TAIL_LIMIT_BYTES;
-	let index = 0;
-	while (index < job.tail.length && cut > 0) {
-		cut -= Buffer.byteLength(job.tail[index], "utf8");
-		index++;
-	}
-	job.tail = job.tail.slice(index);
-}
-
-function truncateTail(text: string, maxBytes = RESULT_LIMIT_BYTES): { text: string; truncated: boolean } {
-	if (Buffer.byteLength(text, "utf8") <= maxBytes) return { text, truncated: false };
-
-	let bytes = 0;
-	let index = text.length;
-	while (index > 0 && bytes < maxBytes) {
-		index--;
-		bytes += Buffer.byteLength(text[index], "utf8");
-	}
-	return { text: text.slice(index), truncated: true };
-}
-
-function formatDuration(ms: number): string {
-	const seconds = Math.max(0, Math.round(ms / 1000));
-	if (seconds < 60) return `${seconds}s`;
-	const minutes = Math.floor(seconds / 60);
-	const rest = seconds % 60;
-	return `${minutes}m${rest.toString().padStart(2, "0")}s`;
-}
-
-function shellQuote(path: string): string {
-	return JSON.stringify(path);
+	job.tail = appendTailText(job.tail, data);
 }
 
 function killProcessGroup(job: BackgroundJob, signal: NodeJS.Signals): void {
@@ -201,7 +166,7 @@ export function installBackgroundShell(pi: ExtensionAPI, jobsMonitor: JobsMonito
 
 			const id = `bg_${String(nextJobNumber++).padStart(3, "0")}`;
 			const cwd = resolve(ctx.cwd, params.cwd ?? ".");
-			const logPath = join(LOG_DIR, `${id}.log`);
+			const logPath = join(LOG_DIR, `${id}-${timestampForFile()}.log`);
 			const log = createWriteStream(logPath, { flags: "a" });
 			const shell = process.env.SHELL || "/bin/bash";
 			const child = spawn(shell, ["-lc", params.command], {
