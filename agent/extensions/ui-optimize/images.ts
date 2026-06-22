@@ -45,6 +45,8 @@ class ImageTokenController {
   constructor(private readonly attachments: Map<string, Attachment>) {}
 
   render(lines: string[], theme: Theme, width: number): string[] {
+    if (this.attachments.size === 0) return lines;
+
     let rendered = lines;
     for (const attachment of this.attachments.values()) {
       rendered = rendered.map((line) => line.replaceAll(attachment.token, renderImageToken(attachment.token, theme)));

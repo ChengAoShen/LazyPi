@@ -14,6 +14,10 @@ const PREVIOUS_TOOL_PATCHES = [
   Symbol.for("local.ui-optimize.tool-execution.group.patch.v4"),
 ];
 const PREVIOUS_ASSISTANT_PATCHES = [Symbol.for("local.ui-optimize.assistant-separator.patch.v1")];
+const TOOL_GROUP_CONTINUATION = Symbol.for("local.ui-optimize.tool-execution.group.continuation");
+const TOOL_GROUP_CACHE = Symbol.for("local.ui-optimize.tool-execution.group.cache");
+const TOOL_GROUP_RENDER_CACHE = Symbol.for("local.ui-optimize.tool-execution.group.render-cache");
+const TOOL_ARG_SUMMARY_CACHE = Symbol.for("local.ui-optimize.tool-execution.arg-summary-cache");
 
 type ParentAware = { [COMPONENT_PARENT]?: { children?: unknown[] } };
 
@@ -23,6 +27,10 @@ type ToolLike = ParentAware & {
   args?: unknown;
   result?: { isError?: boolean; content?: Array<{ type: string; text?: string }> };
   executionStarted?: boolean;
+  [TOOL_GROUP_CONTINUATION]?: boolean;
+  [TOOL_GROUP_CACHE]?: ToolGroupCache;
+  [TOOL_GROUP_RENDER_CACHE]?: { key: string; lines: string[] };
+  [TOOL_ARG_SUMMARY_CACHE]?: { raw: string; summary: string };
 };
 
 type AssistantContent = { type?: string; text?: string; thinking?: string };
@@ -45,6 +53,12 @@ type RenderPatchState = { originalRender: (width: number) => string[] };
 type ToolGroup = {
   tools: ToolLike[];
   thinkingTexts: string[];
+};
+
+type ToolGroupCache = ToolGroup & {
+  children: unknown[];
+  index: number;
+  childrenLength: number;
 };
 
 function installContainerParentPatch(): void {
@@ -179,7 +193,14 @@ function collectToolGroup(first: ToolLike): ToolGroup | undefined {
   if (!children) return undefined;
 
   const index = children.indexOf(first);
-  if (index < 0 || hasCollapsedToolBefore(children, index)) return undefined;
+  if (index < 0) return undefined;
+
+  const cached = first[TOOL_GROUP_CACHE];
+  if (cached && cached.children === children && cached.index === index && cached.childrenLength === children.length) {
+    return cached;
+  }
+
+  if (hasCollapsedToolBefore(children, index)) return undefined;
 
   const tools: ToolLike[] = [];
   const thinkingTexts = collectLeadingThinkingTexts(children, index);
@@ -203,7 +224,19 @@ function collectToolGroup(first: ToolLike): ToolGroup | undefined {
     tools.push(child);
   }
 
-  return tools.length > 0 ? { tools, thinkingTexts } : undefined;
+  if (tools.length === 0) return undefined;
+
+  for (let i = 0; i < tools.length; i++) {
+    try {
+      Object.defineProperty(tools[i]!, TOOL_GROUP_CONTINUATION, { value: i > 0, configurable: true });
+    } catch {
+      tools[i]![TOOL_GROUP_CONTINUATION] = i > 0;
+    }
+  }
+
+  const group = { tools, thinkingTexts, children, index, childrenLength: children.length } satisfies ToolGroupCache;
+  first[TOOL_GROUP_CACHE] = group;
+  return group;
 }
 
 function toolStatus(tool: ToolLike): string {
@@ -226,9 +259,15 @@ function toolArgSummary(tool: ToolLike): string {
 
   const input = args as Record<string, unknown>;
   const value = input.command ?? input.path ?? input.file_path ?? input.query ?? input.url ?? input.action;
-  return typeof value === "string" && value.length > 0
-    ? ` ${truncateToWidth(value.replace(/\s+/g, " "), TOOL_SUMMARY_WIDTH, "…")}`
-    : "";
+  if (typeof value !== "string" || value.length === 0) return "";
+
+  const raw = value.replace(/\s+/g, " ");
+  const cached = tool[TOOL_ARG_SUMMARY_CACHE];
+  if (cached?.raw === raw) return cached.summary;
+
+  const summary = ` ${truncateToWidth(raw, TOOL_SUMMARY_WIDTH, "…")}`;
+  tool[TOOL_ARG_SUMMARY_CACHE] = { raw, summary };
+  return summary;
 }
 
 function firstErrorLine(tools: ToolLike[]): string | undefined {
@@ -247,9 +286,14 @@ function compactStartToWidth(text: string, width: number): string {
   const headWidth = Math.min(18, Math.max(6, Math.floor(width * 0.22)));
   const tailWidth = Math.max(1, width - headWidth - 2);
   const head = truncateToWidth(text, headWidth, "");
-  let tail = text;
-  while (visibleWidth(tail) > tailWidth && tail.length > 0) tail = tail.slice(1);
-  return `${head}… ${tail}`;
+  let low = 0;
+  let high = text.length;
+  while (low < high) {
+    const mid = Math.floor((low + high) / 2);
+    if (visibleWidth(text.slice(mid)) > tailWidth) low = mid + 1;
+    else high = mid;
+  }
+  return `${head}… ${text.slice(low)}`;
 }
 
 function thinkingLine(thinkingTexts: string[], width: number): string | undefined {
@@ -301,9 +345,22 @@ function renderMultiToolGroup(tools: ToolLike[], thinkingTexts: string[], width:
   return lines;
 }
 
+function toolGroupCacheKey(group: ToolGroup, width: number): string {
+  let key = `${width}|${group.thinkingTexts.length}|${group.thinkingTexts.join("\u001f")}`;
+  for (const tool of group.tools) {
+    key += `|${tool.toolName ?? "tool"}:${toolState(tool)}:${toolArgSummary(tool)}`;
+    if (tool.result?.isError) key += `:${firstErrorLine([tool]) ?? ""}`;
+  }
+  return key;
+}
+
 function renderToolGroup(first: ToolLike, width: number): string[] | undefined {
   const group = collectToolGroup(first);
   if (!group) return undefined;
+
+  const key = toolGroupCacheKey(group, width);
+  const cached = first[TOOL_GROUP_RENDER_CACHE];
+  if (cached?.key === key) return cached.lines;
 
   const lines = group.tools.length === 1
     ? renderSingleToolGroup(group.tools[0]!, group.thinkingTexts, width)
@@ -311,10 +368,16 @@ function renderToolGroup(first: ToolLike, width: number): string[] | undefined {
 
   const errorLine = firstErrorLine(group.tools);
   if (errorLine) lines.push(truncateToWidth(errorLine, width, ""));
+  first[TOOL_GROUP_RENDER_CACHE] = { key, lines };
   return lines;
 }
 
 function isContinuationOfCollapsedToolGroup(tool: ToolLike): boolean {
+  // Fast path: group-start rendering marks the following tools in the same
+  // collapsed group. This avoids rescanning the whole chat on every keypress.
+  if (tool[TOOL_GROUP_CONTINUATION] === true) return true;
+  if (tool[TOOL_GROUP_CONTINUATION] === false) return false;
+
   const children = tool[COMPONENT_PARENT]?.children;
   if (!children) return false;
 
