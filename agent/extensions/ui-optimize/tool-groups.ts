@@ -5,6 +5,7 @@ import { loadInteractiveRuntime, type RuntimeTheme } from "./runtime-imports.ts"
 
 const TOOL_SUMMARY_WIDTH = 48;
 const MAX_TOOL_ROWS = 8;
+const MAX_THINKING_ROWS = 8;
 const PREVIOUS_TOOL_PATCHES = [
   Symbol.for("local.ui-optimize.tool-execution.group.patch.v2"),
   Symbol.for("local.ui-optimize.tool-execution.group.patch.v3"),
@@ -325,13 +326,6 @@ function statusSummary(tools: ToolLike[]): string {
   return parts.join("  ");
 }
 
-function thinkingSummaryLine(thinkingTexts: string[], width: number): string | undefined {
-  if (thinkingTexts.length === 0) return undefined;
-  const label = `${fg("accent", bold("💭 think"))} ${fg("accent", `×${thinkingTexts.length}`)}`;
-  const preview = compactStartToWidth(thinkingTexts.join(" · "), Math.max(1, width - 20));
-  return `${label}   ${fg("muted", "┆")} ${fg("dim", preview)}`;
-}
-
 function toolsSummaryLine(tools: ToolLike[]): string {
   const label = `${fg("accent", bold("🛠 tools"))} ${fg("accent", `×${tools.length}`)}`;
   return `${label}   ${statusSummary(tools)}`;
@@ -342,6 +336,35 @@ function toolRow(tool: ToolLike, width: number): string {
   const arg = toolArgSummary(tool).trimStart();
   const row = `  ${fg(statusColor(tool), toolStatus(tool))} ${fg("accent", name)}${arg ? ` ${fg("dim", arg)}` : ""}`;
   return truncateToWidth(row, width, "");
+}
+
+type ThinkingRow = { index: number; text: string };
+
+function thinkingRows(thinkingTexts: string[]): ThinkingRow[] {
+  return thinkingTexts
+    .map((text, index) => ({ index: index + 1, text: text.replace(/\s+/g, " ").trim() }))
+    .filter((row) => row.text.length > 0);
+}
+
+function thinkingRow(row: ThinkingRow, width: number): string {
+  const name = padToWidth(`think ${row.index}`, 10);
+  const preview = compactStartToWidth(row.text, Math.max(1, width - 16));
+  const line = `  ${fg("muted", "·")} ${fg("accent", name)} ${fg("dim", preview)}`;
+  return truncateToWidth(line, width, "");
+}
+
+function hiddenRowsLine(count: number, label: string, width: number): string | undefined {
+  if (count <= 0) return undefined;
+  return truncateToWidth(`  ${fg("muted", "…")} ${fg("dim", `${count} earlier ${label}${count === 1 ? "" : "s"}`)}`, width, "");
+}
+
+function renderRecentRows<T>(items: T[], maxRows: number, hiddenLabel: string, width: number, renderRow: (item: T, width: number) => string): string[] {
+  const hiddenCount = Math.max(0, items.length - maxRows);
+  const lines: string[] = [];
+  const hiddenLine = hiddenRowsLine(hiddenCount, hiddenLabel, width);
+  if (hiddenLine) lines.push(hiddenLine);
+  for (const item of items.slice(-maxRows)) lines.push(renderRow(item, width));
+  return lines;
 }
 
 function frameActivityBlock(lines: string[], width: number, hint: string): string[] {
@@ -369,16 +392,15 @@ function frameActivityBlock(lines: string[], width: number, hint: string): strin
 
 function renderActivityGroup(tools: ToolLike[], thinkingTexts: string[], width: number): string[] {
   const lines = [""];
-  const thought = thinkingSummaryLine(thinkingTexts, width);
-  if (thought) lines.push(truncateToWidth(thought, width, ""));
-  lines.push(truncateToWidth(toolsSummaryLine(tools), width, ""));
+  const thoughts = thinkingRows(thinkingTexts);
 
-  const hiddenCount = Math.max(0, tools.length - MAX_TOOL_ROWS);
-  if (hiddenCount > 0) {
-    lines.push(truncateToWidth(`  ${fg("muted", "…")} ${fg("dim", `${hiddenCount} earlier tool call${hiddenCount === 1 ? "" : "s"}`)}`, width, ""));
+  if (thoughts.length > 0) {
+    lines.push(truncateToWidth(`${fg("accent", bold("💭 thinking"))} ${fg("accent", `×${thinkingTexts.length}`)}   ${fg("dim", `${thoughts.length} item${thoughts.length === 1 ? "" : "s"}`)}`, width, ""));
+    lines.push(...renderRecentRows(thoughts, MAX_THINKING_ROWS, "thinking item", width, thinkingRow));
   }
 
-  for (const tool of tools.slice(-MAX_TOOL_ROWS)) lines.push(toolRow(tool, width));
+  lines.push(truncateToWidth(toolsSummaryLine(tools), width, ""));
+  lines.push(...renderRecentRows(tools, MAX_TOOL_ROWS, "tool call", width, (tool, rowWidth) => toolRow(tool, rowWidth)));
 
   const hint = thinkingTexts.length > 0 ? "Ctrl+O/T" : "Ctrl+O";
   return frameActivityBlock(lines, width, hint);
