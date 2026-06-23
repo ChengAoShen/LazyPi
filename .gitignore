@@ -13,6 +13,9 @@ agent/*
 !agent/APPEND_SYSTEM.md
 !agent/extensions/
 !agent/extensions/**
+!agent/skills/
+!agent/skills/**
+
 
 # Never sync secrets, local installs, binaries, or conversation history.
 agent/auth.json

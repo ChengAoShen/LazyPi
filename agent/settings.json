@@ -8,7 +8,6 @@
   "transport": "auto",
   "defaultThinkingLevel": "medium",
   "hideThinkingBlock": true,
-  "packages": [
-    "npm:pi-web-access"
-  ]
+  "packages": ["npm:pi-web-access"]
 }
+
