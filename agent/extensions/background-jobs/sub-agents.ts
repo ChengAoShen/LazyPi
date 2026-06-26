@@ -410,7 +410,7 @@ export function installSubAgents(pi: ExtensionAPI, jobsMonitor: JobsMonitor) {
 		writeMainProgressSnapshot();
 	});
 
-	async function startSubAgent(input: AgentTask, parentCwd: string): Promise<SubAgentJob> {
+	async function startSubAgent(input: AgentTask, parentCwd: string, currentModel?: ExtensionContext["model"]): Promise<SubAgentJob> {
 		await mkdir(WORK_DIR, { recursive: true });
 
 		const running = [...jobs.values()].filter((job) => job.status === "running").length;
@@ -420,6 +420,9 @@ export function installSubAgents(pi: ExtensionAPI, jobsMonitor: JobsMonitor) {
 		const cwd = resolve(parentCwd, input.cwd ?? ".");
 		const tools = input.tools?.length ? input.tools : DEFAULT_TOOLS;
 		const thinking = input.thinking ?? DEFAULT_THINKING;
+		const shouldInheritModel = !input.provider && !input.model;
+		const provider = shouldInheritModel ? currentModel?.provider : input.provider;
+		const model = shouldInheritModel ? currentModel?.id : input.model;
 		const stamp = timestampForFile();
 		const promptPath = join(WORK_DIR, `${id}-${stamp}.prompt.md`);
 		const logPath = join(WORK_DIR, `${id}-${stamp}.log`);
@@ -428,8 +431,8 @@ export function installSubAgents(pi: ExtensionAPI, jobsMonitor: JobsMonitor) {
 		await writeFile(promptPath, prompt, "utf8");
 
 		const args = ["--print", "--no-session", "--no-extensions", "--tools", tools.join(","), "--thinking", thinking];
-		if (input.provider) args.push("--provider", input.provider);
-		if (input.model) args.push("--model", input.model);
+		if (provider) args.push("--provider", provider);
+		if (model) args.push("--model", model);
 		args.push(`@${promptPath}`);
 
 		const log = createWriteStream(logPath, { flags: "a" });
@@ -447,8 +450,8 @@ export function installSubAgents(pi: ExtensionAPI, jobsMonitor: JobsMonitor) {
 			label: input.label,
 			cwd,
 			tools,
-			model: input.model,
-			provider: input.provider,
+			model,
+			provider,
 			thinking,
 			promptPath,
 			logPath,
@@ -597,7 +600,7 @@ export function installSubAgents(pi: ExtensionAPI, jobsMonitor: JobsMonitor) {
 				}
 
 				const started: SubAgentJob[] = [];
-				for (const task of tasks) started.push(await startSubAgent(task, ctx.cwd));
+				for (const task of tasks) started.push(await startSubAgent(task, ctx.cwd, ctx.model));
 				if (returnToMain) scheduleReturnToMain(started, returnDelivery, returnInstruction);
 				monitor.update(ctx);
 
